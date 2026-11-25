@@ -106,14 +106,22 @@ jobs:
         # The tests run with the upstream application ID and name (blank overrides), so they
         # behave exactly like upstream and only tell whether the merged code works.
         run: |
-          if ! ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest :app:compileMinimalDebugUnitTestKotlin \
-            -PhomeAssistantAndroidApplicationId= -PhomeAssistantAndroidAppName=; then
-            {
-              echo "### Unit tests failed on upstream $UPSTREAM_TAG"
-              echo
-              echo "The tests of the fork merged with \`$UPSTREAM_TAG\` do not pass, see the run log for the failing tests."
-            } > "$RUNNER_TEMP/report.md"
-            exit 1
+          run_tests() {
+            ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest :app:compileMinimalDebugUnitTestKotlin \
+              -PhomeAssistantAndroidApplicationId= -PhomeAssistantAndroidAppName=
+          }
+          # Robolectric downloads the Android runtime it needs from Maven Central while the tests
+          # run. A failed download fails the tests it was for, a second attempt rules that out.
+          if ! run_tests; then
+            echo "::warning::The unit tests failed, running them a second time"
+            if ! run_tests; then
+              {
+                echo "### Unit tests failed on upstream $UPSTREAM_TAG"
+                echo
+                echo "The tests of the fork merged with \`$UPSTREAM_TAG\` do not pass, see the run log for the failing tests."
+              } > "$RUNNER_TEMP/report.md"
+              exit 1
+            fi
           fi
 
       - name: Report the failure
