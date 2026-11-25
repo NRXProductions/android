@@ -79,7 +79,7 @@ internal abstract class DataModule {
             MtlsAwareDataSourceFactory(
                 context = appContext,
                 okHttpClient = okHttpClientProvider(),
-                usesMtls = { clientCert.certificate != null },
+                usesMtls = { clientCert.hasCertificate },
             )
         }
 

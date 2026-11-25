@@ -40,6 +40,11 @@
             android:key="connection_security_level"
             android:icon="@drawable/ic_lock"
             android:title="@string/connection_security_level_title"/>
+        <Preference
+            android:key="connection_client_certificate"
+            android:icon="@drawable/ic_lock"
+            android:title="@string/pref_connection_client_certificate"
+            app:isPreferenceVisible="false"/>
     </PreferenceCategory>
     <PreferenceCategory
         android:key="security_category"

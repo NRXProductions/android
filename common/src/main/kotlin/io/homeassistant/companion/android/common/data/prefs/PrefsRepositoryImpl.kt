@@ -8,6 +8,7 @@ import io.homeassistant.companion.android.common.data.prefs.PrefsRepositoryImpl.
 import io.homeassistant.companion.android.common.util.GestureAction
 import io.homeassistant.companion.android.common.util.HAGesture
 import io.homeassistant.companion.android.common.util.di.SuspendProvider
+import io.homeassistant.companion.android.common.util.kotlinJsonMapper
 import io.homeassistant.companion.android.di.qualifiers.NamedIntegrationStorage
 import io.homeassistant.companion.android.di.qualifiers.NamedLegacyChangelogPref
 import io.homeassistant.companion.android.di.qualifiers.NamedThemesStorage
@@ -15,6 +16,8 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.SerializationException
+import timber.log.Timber
 
 private const val PREF_VER = "version"
 private const val PREF_NIGHT_MODE_THEME = "theme"
@@ -34,6 +37,7 @@ private const val PREF_AUTOPLAY_VIDEO = "autoplay_video"
 private const val PREF_ALWAYS_SHOW_FIRST_VIEW_ON_APP_START = "always_show_first_view_on_app_start"
 private const val PREF_WEBVIEW_DEBUG_ENABLED = "webview_debug_enabled"
 private const val PREF_KEY_ALIAS = "key-alias"
+private const val PREF_KEY_ALIASES = "key-aliases"
 private const val PREF_CRASH_REPORTING_DISABLED = "crash_reporting"
 private const val PREF_IGNORED_SUGGESTIONS = "ignored_suggestions"
 private const val PREF_AUTO_FAVORITES = "auto_favorites"
@@ -322,6 +326,20 @@ internal class PrefsRepositoryImpl @Inject constructor(
 
     override suspend fun getKeyAlias(): String? {
         return localStorage().getString(PREF_KEY_ALIAS)
+    }
+
+    override suspend fun saveKeyAliases(aliases: Map<String, String>) {
+        localStorage().putString(PREF_KEY_ALIASES, kotlinJsonMapper.encodeToString(aliases))
+    }
+
+    override suspend fun getKeyAliases(): Map<String, String> {
+        val aliases = localStorage().getString(PREF_KEY_ALIASES)?.takeIf { it.isNotBlank() } ?: return emptyMap()
+        return try {
+            kotlinJsonMapper.decodeFromString(aliases)
+        } catch (e: SerializationException) {
+            Timber.e(e, "Unable to read the client certificate aliases")
+            emptyMap()
+        }
     }
 
     override suspend fun getIgnoredSuggestions(): List<String> {

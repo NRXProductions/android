@@ -1,6 +1,8 @@
 package io.homeassistant.companion.android.common.data
 
 import androidx.annotation.VisibleForTesting
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
+import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificateManager
 import io.homeassistant.companion.android.common.util.FailFast
 import java.io.IOException
@@ -12,6 +14,8 @@ import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import javax.inject.Inject
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLEngine
+import javax.net.ssl.SSLSocket
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509ExtendedTrustManager
@@ -94,6 +98,14 @@ class TLSHelper @Inject constructor(private val clientCertificateManager: Client
         null
     }
 
+    /**
+     * Returns a key manager presenting, for each connection, the client certificate selected for the
+     * endpoint being connected to, and none when the endpoint has no selection.
+     *
+     * The endpoint is the one of the ongoing handshake, the same peer the trust manager validates the
+     * server certificate against. It is handed over as the alias between the `choose*Alias` and the
+     * `get*` calls of a handshake, so a certificate is never presented to another host than its own.
+     */
     @VisibleForTesting
     internal suspend fun getMTLSKeyManagerForOKHTTP(): X509ExtendedKeyManager {
         val clientCertProvider = clientCertificateManager.getClientCertProvider()
@@ -102,8 +114,17 @@ class TLSHelper @Inject constructor(private val clientCertificateManager: Client
                 return emptyArray()
             }
 
-            override fun chooseClientAlias(p0: Array<out String>?, p1: Array<out Principal>?, p2: Socket?): String {
-                return ""
+            override fun chooseClientAlias(p0: Array<out String>?, p1: Array<out Principal>?, p2: Socket?): String? {
+                val session = (p2 as? SSLSocket)?.handshakeSession
+                return aliasFor(session?.peerHost, session?.peerPort)
+            }
+
+            override fun chooseEngineClientAlias(
+                p0: Array<out String>?,
+                p1: Array<out Principal>?,
+                p2: SSLEngine?,
+            ): String? {
+                return aliasFor(p2?.peerHost, p2?.peerPort)
             }
 
             override fun getServerAliases(p0: String?, p1: Array<out Principal>?): Array<String> {
@@ -115,11 +136,21 @@ class TLSHelper @Inject constructor(private val clientCertificateManager: Client
             }
 
             override fun getCertificateChain(p0: String?): Array<X509Certificate>? {
-                return clientCertProvider.certificate?.chain
+                return certificateOf(p0)?.chain
             }
 
             override fun getPrivateKey(p0: String?): PrivateKey? {
-                return clientCertProvider.certificate?.privateKey
+                return certificateOf(p0)?.privateKey
+            }
+
+            private fun aliasFor(host: String?, port: Int?): String? {
+                if (host.isNullOrEmpty() || port == null) return null
+                val endpoint = ClientCertEndpoint(host, port)
+                return endpoint.takeIf { clientCertProvider.certificateFor(it) != null }?.toString()
+            }
+
+            private fun certificateOf(alias: String?): ClientCertificate? {
+                return alias?.let(ClientCertEndpoint::parse)?.let(clientCertProvider::certificateFor)
             }
         }
     }

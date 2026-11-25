@@ -11,6 +11,7 @@ import android.webkit.ClientCertRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.annotation.VisibleForTesting
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.ClientCertProvider
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
@@ -57,22 +58,25 @@ open class TLSWebViewClient(
             return
         }
 
-        val certificate = clientCertProvider.certificate
+        // The certificate is selected per endpoint: the one of another server must never be presented
+        // to this host, and a host without a selection yet gets its own prompt.
+        val endpoint = ClientCertEndpoint(request.host, request.port)
+        val certificate = clientCertProvider.certificateFor(endpoint)
         if (certificate != null) {
             checkChainValidity(certificate.chain)
             request.proceed(certificate.privateKey, certificate.chain)
         } else {
-            // If no certificate is available, then the user must be prompted for one
-            selectClientCert(activity, request)
+            // If no certificate is available for this endpoint, then the user must be prompted for one
+            selectClientCert(activity, request, endpoint)
         }
     }
 
-    private fun selectClientCert(activity: Activity, request: ClientCertRequest) {
+    private fun selectClientCert(activity: Activity, request: ClientCertRequest, endpoint: ClientCertEndpoint) {
         // prompt the user for a key
         try {
             KeyChain.choosePrivateKeyAlias(
                 activity,
-                SafeKeyChainAliasCallback(keyChainRepository) { certificate ->
+                SafeKeyChainAliasCallback(keyChainRepository, endpoint) { certificate ->
                     if (certificate == null) {
                         hasUserDeniedAccess = true
                         request.ignore()
@@ -122,6 +126,7 @@ open class TLSWebViewClient(
  */
 private class SafeKeyChainAliasCallback(
     private val keyChainRepository: KeyChainRepository,
+    private val endpoint: ClientCertEndpoint,
     onResult: (certificate: ClientCertificate?) -> Unit,
 ) : KeyChainAliasCallback {
     private val ioScope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
@@ -130,7 +135,7 @@ private class SafeKeyChainAliasCallback(
     override fun alias(alias: String?) {
         if (alias != null) {
             ioScope.launch {
-                val certificate = keyChainRepository.select(alias)
+                val certificate = keyChainRepository.select(endpoint, alias)
                 onResult.get()?.invoke(certificate)
             }
         } else {

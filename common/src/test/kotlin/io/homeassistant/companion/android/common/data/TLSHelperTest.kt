@@ -1,15 +1,19 @@
 package io.homeassistant.companion.android.common.data
 
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.ClientCertProvider
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificateManager
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
 import io.homeassistant.companion.android.common.data.keychain.KeyStoreRepository
+import io.mockk.every
 import io.mockk.mockk
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import javax.net.ssl.SSLEngine
+import javax.net.ssl.SSLSocket
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -22,13 +26,14 @@ class TLSHelperTest {
     @Test
     fun `Given a client cert selected on a previous run when creating the mTLS key manager then the cert is loaded before being returned`() = runTest {
         val certificate = ClientCertificate(mockk(), arrayOf(USER_CA))
-        val keyChain = FakeKeyChainRepository(toLoad = certificate)
+        val keyChain = FakeKeyChainRepository(toLoad = mapOf(SERVER_A to certificate))
         val tlsHelper = tlsHelperOf(keyChain = keyChain)
 
         val keyManager = tlsHelper.getMTLSKeyManagerForOKHTTP()
 
-        assertEquals(certificate.privateKey, keyManager.getPrivateKey(null))
-        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(null))
+        val alias = keyManager.chooseClientAlias(null, null, socketTo(SERVER_A))
+        assertEquals(certificate.privateKey, keyManager.getPrivateKey(alias))
+        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(alias))
     }
 
     @Test
@@ -39,8 +44,9 @@ class TLSHelperTest {
 
         val keyManager = tlsHelper.getMTLSKeyManagerForOKHTTP()
 
-        assertEquals(certificate.privateKey, keyManager.getPrivateKey(null))
-        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(null))
+        val alias = keyManager.chooseClientAlias(null, null, socketTo(SERVER_A))
+        assertEquals(certificate.privateKey, keyManager.getPrivateKey(alias))
+        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(alias))
     }
 
     @Test
@@ -48,14 +54,67 @@ class TLSHelperTest {
         val keyChain = FakeKeyChainRepository()
         val tlsHelper = tlsHelperOf(keyChain = keyChain)
         val keyManager = tlsHelper.getMTLSKeyManagerForOKHTTP()
-        assertNull(keyManager.getPrivateKey(null))
-        assertNull(keyManager.getCertificateChain(null))
+        assertNull(keyManager.chooseClientAlias(null, null, socketTo(SERVER_A)))
 
         val certificate = ClientCertificate(mockk(), arrayOf(USER_CA))
-        keyChain.certificate = certificate
+        keyChain.certificates[SERVER_A] = certificate
 
-        assertEquals(certificate.privateKey, keyManager.getPrivateKey(null))
-        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(null))
+        val alias = keyManager.chooseClientAlias(null, null, socketTo(SERVER_A))
+        assertEquals(certificate.privateKey, keyManager.getPrivateKey(alias))
+        assertArrayEquals(certificate.chain, keyManager.getCertificateChain(alias))
+    }
+
+    @Test
+    fun `Given client certs selected for two servers when connecting then each server is presented its own cert`() = runTest {
+        val certificateA = ClientCertificate(mockk(), arrayOf(USER_CA))
+        val certificateB = ClientCertificate(mockk(), arrayOf(SYSTEM_CA))
+        val keyChain = FakeKeyChainRepository(toLoad = mapOf(SERVER_A to certificateA, SERVER_B to certificateB))
+        val keyManager = tlsHelperOf(keyChain = keyChain).getMTLSKeyManagerForOKHTTP()
+
+        val aliasA = keyManager.chooseClientAlias(null, null, socketTo(SERVER_A))
+        val aliasB = keyManager.chooseClientAlias(null, null, socketTo(SERVER_B))
+
+        assertEquals(certificateA.privateKey, keyManager.getPrivateKey(aliasA))
+        assertArrayEquals(certificateA.chain, keyManager.getCertificateChain(aliasA))
+        assertEquals(certificateB.privateKey, keyManager.getPrivateKey(aliasB))
+        assertArrayEquals(certificateB.chain, keyManager.getCertificateChain(aliasB))
+    }
+
+    @Test
+    fun `Given a client cert selected for a server when connecting to another host then no cert is presented`() = runTest {
+        val certificate = ClientCertificate(mockk(), arrayOf(USER_CA))
+        val keyChain = FakeKeyChainRepository(toLoad = mapOf(SERVER_A to certificate))
+        val keyManager = tlsHelperOf(keyChain = keyChain).getMTLSKeyManagerForOKHTTP()
+
+        assertNull(keyManager.chooseClientAlias(null, null, socketTo(SERVER_B)))
+        assertNull(keyManager.chooseClientAlias(null, null, socketTo(ClientCertEndpoint(SERVER_A.host, 8443))))
+        assertNull(keyManager.getPrivateKey(null))
+        assertNull(keyManager.getCertificateChain(null))
+        assertNull(keyManager.getPrivateKey(SERVER_B.toString()))
+        assertNull(keyManager.getCertificateChain(SERVER_B.toString()))
+    }
+
+    @Test
+    fun `Given a socket which is not in a handshake when choosing the client alias then no cert is presented`() = runTest {
+        val certificate = ClientCertificate(mockk(), arrayOf(USER_CA))
+        val keyChain = FakeKeyChainRepository(toLoad = mapOf(SERVER_A to certificate))
+        val keyManager = tlsHelperOf(keyChain = keyChain).getMTLSKeyManagerForOKHTTP()
+        val socket = mockk<SSLSocket> { every { handshakeSession } returns null }
+
+        assertNull(keyManager.chooseClientAlias(null, null, socket))
+        assertNull(keyManager.chooseClientAlias(null, null, null))
+    }
+
+    @Test
+    fun `Given a client cert selected for a server when an engine connects to it then the cert is presented`() = runTest {
+        val certificate = ClientCertificate(mockk(), arrayOf(USER_CA))
+        val keyChain = FakeKeyChainRepository(toLoad = mapOf(SERVER_A to certificate))
+        val keyManager = tlsHelperOf(keyChain = keyChain).getMTLSKeyManagerForOKHTTP()
+
+        val alias = keyManager.chooseEngineClientAlias(null, null, engineTo(SERVER_A))
+
+        assertEquals(certificate.privateKey, keyManager.getPrivateKey(alias))
+        assertNull(keyManager.chooseEngineClientAlias(null, null, engineTo(SERVER_B)))
     }
 
     @Test
@@ -104,6 +163,18 @@ class TLSHelperTest {
         keyStore: KeyStoreRepository = FakeKeyStoreRepository(),
     ): TLSHelper = TLSHelper(ClientCertificateManager(keyChain, keyStore))
 
+    private fun socketTo(endpoint: ClientCertEndpoint): SSLSocket = mockk {
+        every { handshakeSession } returns mockk {
+            every { peerHost } returns endpoint.host
+            every { peerPort } returns endpoint.port
+        }
+    }
+
+    private fun engineTo(endpoint: ClientCertEndpoint): SSLEngine = mockk {
+        every { peerHost } returns endpoint.host
+        every { peerPort } returns endpoint.port
+    }
+
     private fun keyStoreOf(vararg entries: Pair<String, X509Certificate>): KeyStore {
         return loadKeyStore().apply {
             entries.forEach { (alias, certificate) -> setCertificateEntry(alias, certificate) }
@@ -111,6 +182,9 @@ class TLSHelperTest {
     }
 
     companion object {
+        private val SERVER_A = ClientCertEndpoint("a.example.com", 443)
+        private val SERVER_B = ClientCertEndpoint("b.example.com", 443)
+
         private val USER_CA = parseCertificate(
             """
             -----BEGIN CERTIFICATE-----
@@ -155,23 +229,30 @@ class TLSHelperTest {
  * repositories where the cert is unavailable until loaded
  * (https://github.com/home-assistant/android/issues/6119).
  */
-private class FakeKeyChainRepository(private val toLoad: ClientCertificate? = null) :
+private class FakeKeyChainRepository(private val toLoad: Map<ClientCertEndpoint, ClientCertificate> = emptyMap()) :
     KeyChainRepository,
     ClientCertProvider {
 
-    override var certificate: ClientCertificate? = null
+    val certificates = mutableMapOf<ClientCertEndpoint, ClientCertificate>()
+
+    override val hasCertificate: Boolean
+        get() = certificates.isNotEmpty()
+
+    override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = certificates[endpoint]
 
     override suspend fun getClientCertProvider(): ClientCertProvider {
-        if (certificate == null) {
-            certificate = toLoad
+        if (certificates.isEmpty()) {
+            certificates += toLoad
         }
         return this
     }
 
-    override suspend fun select(alias: String): ClientCertificate? = certificate
+    override suspend fun getAlias(endpoint: ClientCertEndpoint): String? = null
 
-    override suspend fun clear() {
-        certificate = null
+    override suspend fun select(endpoint: ClientCertEndpoint, alias: String): ClientCertificate? = certificates[endpoint]
+
+    override suspend fun clear(endpoint: ClientCertEndpoint) {
+        certificates -= endpoint
     }
 }
 
@@ -180,7 +261,12 @@ private class FakeKeyStoreRepository(private val toLoad: ClientCertificate? = nu
     KeyStoreRepository,
     ClientCertProvider {
 
-    override var certificate: ClientCertificate? = null
+    var certificate: ClientCertificate? = null
+
+    override val hasCertificate: Boolean
+        get() = certificate != null
+
+    override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = certificate
 
     override suspend fun getClientCertProvider(): ClientCertProvider {
         if (certificate == null) {
