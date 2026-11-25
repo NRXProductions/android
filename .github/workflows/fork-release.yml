@@ -74,10 +74,61 @@ jobs:
             echo "build=$build"
           } >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Build And Publish
+  test:
+    name: Unit Tests
     needs: [check]
     if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # Report a failure
+    env:
+      UPSTREAM_TAG: ${{ needs.check.outputs.upstream-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge the upstream release
+        run: bash .github/scripts/fork-release.sh merge
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      - name: Provide google-services.json
+        env:
+          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
+        run: bash .github/scripts/fork-release.sh google-services
+
+      - name: Run unit tests
+        # The tests run with the upstream application ID and name (blank overrides), so they
+        # behave exactly like upstream and only tell whether the merged code works.
+        run: |
+          if ! ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest :app:compileMinimalDebugUnitTestKotlin \
+            -PhomeAssistantAndroidApplicationId= -PhomeAssistantAndroidAppName=; then
+            {
+              echo "### Unit tests failed on upstream $UPSTREAM_TAG"
+              echo
+              echo "The tests of the fork merged with \`$UPSTREAM_TAG\` do not pass, see the run log for the failing tests."
+            } > "$RUNNER_TEMP/report.md"
+            exit 1
+          fi
+
+      - name: Report the failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/fork-release.sh report
+
+  # The release is built in a job of its own, on a fresh runner without any Gradle cache. Building
+  # it in the workspace and Gradle daemon the tests just used makes the annotation processors of
+  # the release variant generate nothing, and the build fails on the missing Hilt classes.
+  release:
+    name: Build And Publish
+    needs: [check, test]
     runs-on: ubuntu-latest
     permissions:
       contents: write # Create the release
@@ -92,58 +143,17 @@ jobs:
           persist-credentials: false
 
       - name: Merge the upstream release
-        id: merge
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch --no-tags "https://github.com/$UPSTREAM_REPOSITORY.git" "refs/tags/$UPSTREAM_TAG:refs/upstream/$UPSTREAM_TAG"
-          if ! git merge --no-edit "refs/upstream/$UPSTREAM_TAG"; then
-            {
-              echo "### Merge conflict with upstream $UPSTREAM_TAG"
-              echo
-              echo "Merge \`$UPSTREAM_TAG\` of $UPSTREAM_REPOSITORY into \`$GITHUB_REF_NAME\` locally, resolve the conflicts and push."
-              echo
-              echo '```'
-              git diff --name-only --diff-filter=U
-              echo '```'
-            } > "$RUNNER_TEMP/report.md"
-            exit 1
-          fi
+        run: bash .github/scripts/fork-release.sh merge
 
       - uses: ./.github/actions/setup-build-env
         with:
+          cache-disabled: "true"
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Provide google-services.json
         env:
           GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
-        run: |
-          application_id="$(grep -E '^homeAssistantAndroidApplicationId=' gradle.properties | cut -d= -f2)"
-          if [[ -n "$GOOGLE_SERVICES" ]]; then
-            echo "$GOOGLE_SERVICES" > app/google-services.json
-          else
-            # Without a Firebase project of its own the fork is built with placeholder values:
-            # everything works but the push notifications delivered through Firebase.
-            # The upstream application IDs are kept next to the ones of the fork for the unit tests.
-            jq --arg id "${application_id:-io.homeassistant.companion.android}" \
-              '.client += [.client[] | .client_info.android_client_info.package_name |= sub("^io\\.homeassistant\\.companion\\.android"; $id)]' \
-              .github/mock-google-services.json > app/google-services.json
-          fi
-
-      - name: Run unit tests
-        id: test
-        # The tests run with the upstream application ID and name (blank overrides), so they
-        # behave exactly like upstream and only tell whether the merged code works.
-        run: |
-          if ! ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest :app:compileMinimalDebugUnitTestKotlin \
-            -PhomeAssistantAndroidApplicationId= -PhomeAssistantAndroidAppName=; then
-            {
-              echo "### Unit tests failed on upstream $UPSTREAM_TAG"
-              echo
-              echo "The tests of the fork merged with \`$UPSTREAM_TAG\` do not pass, see the run log for the failing tests."
-            } > "$RUNNER_TEMP/report.md"
-            exit 1
-          fi
+        run: bash .github/scripts/fork-release.sh google-services
 
       - name: Build signed APKs
         env:
@@ -165,7 +175,7 @@ jobs:
           export VERSION_CODE="$(( $(date +%s) / 60 ))"
           export VERSION_NAME="${UPSTREAM_TAG}-mtls"
 
-          if ! ./gradlew :app:assembleFullRelease :app:assembleMinimalRelease; then
+          if ! ./gradlew :app:assembleFullRelease :app:assembleMinimalRelease --no-build-cache; then
             echo "### Release build failed on upstream $UPSTREAM_TAG" > "$RUNNER_TEMP/report.md"
             exit 1
           fi
@@ -214,28 +224,11 @@ jobs:
       - name: Close the failure report
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$REPORT_TITLE\"" --json number --jq '.[0].number' 2> /dev/null || true)"
-          if [[ -n "$issue" ]]; then
-            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "Fixed, $RELEASE_TAG was published."
-          fi
+        run: bash .github/scripts/fork-release.sh close-report
 
       - name: Report the failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          report="$RUNNER_TEMP/report.md"
-          [[ -f "$report" ]] || echo "### Fork release of upstream $UPSTREAM_TAG failed" > "$report"
-          printf '\nRun: %s\n' "$RUN_URL" >> "$report"
-          cat "$report" >> "$GITHUB_STEP_SUMMARY"
-
-          # Nothing was published. The issue is a best effort on top of the failed run (issues are
-          # disabled by default on a fork).
-          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$REPORT_TITLE\"" --json number --jq '.[0].number' 2> /dev/null || true)"
-          if [[ -n "$issue" ]]; then
-            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$report" || true
-          else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$REPORT_TITLE" --body-file "$report" || true
-          fi
+        run: bash .github/scripts/fork-release.sh report

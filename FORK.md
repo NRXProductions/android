@@ -15,7 +15,7 @@ anymore.
 | Client certificate selected per server endpoint instead of once for the app | `common/.../data/keychain/`, `common/.../data/TLSHelper.kt`, `app/.../util/TLSWebViewClient.kt` |
 | "TLS client certificate" setting on each server (select, change, remove) | `app/.../settings/server/` |
 | Separate application ID and name, so it installs next to the official app | `gradle.properties`, `build-logic/.../AndroidApplicationConventionPlugin.kt` |
-| Release pipeline of the fork | `.github/workflows/fork-release.yml` |
+| Release pipeline of the fork | `.github/workflows/fork-release.yml`, `.github/scripts/fork-release.sh` |
 
 The first two rows are the fix proposed upstream (branch `fix/multi-server-mtls`), the last two
 only exist in this fork (branch `mtls`).
@@ -60,7 +60,8 @@ The `Fork Release` workflow runs every night and on demand:
 2. If no release of the fork exists yet for that upstream release and the current revision of the
    `mtls` branch, it merges the upstream tag into `mtls` **inside the runner** (nothing is pushed).
 3. It runs the unit tests of `:common` and `:app`.
-4. It builds the `full` and `minimal` release APKs, signed with the key of the fork.
+4. In a second job, on a fresh runner, it does the same merge again and builds the `full` and
+   `minimal` release APKs, signed with the key of the fork.
 5. It publishes them as a GitHub release named after the upstream release, for example
    `2026.11.2-mtls.1a2b3c4`.
 
