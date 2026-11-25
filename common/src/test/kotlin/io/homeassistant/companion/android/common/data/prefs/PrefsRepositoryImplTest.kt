@@ -367,6 +367,38 @@ class PrefsRepositoryImplTest {
     }
 
     @Nested
+    inner class KeyAliases {
+        // Duplicated literal to guard against accidental key renames that would lose the stored state
+        private val key = "key-aliases"
+
+        @Test
+        fun `Given no stored aliases when getting them then returns an empty map`() = runTest {
+            coEvery { localStorage.getString(key) } returns null
+
+            assertEquals(emptyMap<String, String>(), repository.getKeyAliases())
+        }
+
+        @Test
+        fun `Given aliases of two endpoints when saving then they are read back`() = runTest {
+            val stored = slot<String>()
+            coEvery { localStorage.putString(key, capture(stored)) } returns Unit
+            val aliases = mapOf("a.example.com:443" to "alias-a", "b.example.com:443" to "alias-b")
+
+            repository.saveKeyAliases(aliases)
+            coEvery { localStorage.getString(key) } returns stored.captured
+
+            assertEquals(aliases, repository.getKeyAliases())
+        }
+
+        @Test
+        fun `Given corrupted stored aliases when getting them then returns an empty map`() = runTest {
+            coEvery { localStorage.getString(key) } returns "not a json object"
+
+            assertEquals(emptyMap<String, String>(), repository.getKeyAliases())
+        }
+    }
+
+    @Nested
     inner class Changelog {
         // Duplicated literal to guard against accidental key renames that would lose the stored state
         private val key = "last_seen_changelog_version"

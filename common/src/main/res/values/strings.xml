@@ -575,6 +575,11 @@
     <string name="password">Password</string>
     <string name="persistent_notification">Persistent notification</string>
     <string name="person">Person</string>
+    <string name="pref_connection_client_certificate">TLS client certificate</string>
+    <string name="pref_connection_client_certificate_change">Select another certificate</string>
+    <string name="pref_connection_client_certificate_remove">Remove certificate</string>
+    <string name="pref_connection_client_certificate_unavailable">The certificate could not be loaded. Check that it is still installed on your device.</string>
+    <string name="pref_connection_client_certificate_no_chooser">Your device cannot select a client certificate.</string>
     <string name="pref_connection_internal">Internal connection URL</string>
     <string name="pref_connection_title">Connection information</string>
     <string name="pref_connection_url">Home Assistant URL</string>

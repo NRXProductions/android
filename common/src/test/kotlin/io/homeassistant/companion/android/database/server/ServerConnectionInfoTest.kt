@@ -1,5 +1,6 @@
 package io.homeassistant.companion.android.database.server
 
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -333,6 +334,64 @@ class ServerConnectionInfoTest {
         )
         fun `Given URL on the cloudhook or an unknown origin then isFrontendUrl returns false`(url: String) {
             assertFalse(connection.isFrontendUrl(url))
+        }
+    }
+
+    @Nested
+    inner class ClientCertEndpoints {
+
+        @Test
+        fun `Given HTTPS external and internal URLs then both endpoints are returned`() {
+            val connection = ServerConnectionInfo(
+                externalUrl = "https://external.example.com",
+                internalUrl = "https://internal.example.com:8123",
+            )
+
+            assertEquals(
+                listOf(
+                    ClientCertEndpoint("external.example.com", 443),
+                    ClientCertEndpoint("internal.example.com", 8123),
+                ),
+                connection.clientCertEndpoints,
+            )
+        }
+
+        @Test
+        fun `Given a plain HTTP internal URL then only the HTTPS endpoint is returned`() {
+            val connection = ServerConnectionInfo(
+                externalUrl = "https://external.example.com",
+                internalUrl = "http://192.168.1.1:8123",
+            )
+
+            assertEquals(listOf(ClientCertEndpoint("external.example.com", 443)), connection.clientCertEndpoints)
+        }
+
+        @Test
+        fun `Given cloud URLs then they are not client certificate endpoints`() {
+            val connection = ServerConnectionInfo(
+                externalUrl = "https://external.example.com",
+                cloudUrl = "https://cloud.example.com",
+                cloudhookUrl = "https://hooks.nabu.casa/abc",
+            )
+
+            assertEquals(listOf(ClientCertEndpoint("external.example.com", 443)), connection.clientCertEndpoints)
+        }
+
+        @Test
+        fun `Given external and internal URLs on the same endpoint then it is returned once`() {
+            val connection = ServerConnectionInfo(
+                externalUrl = "https://home.example.com",
+                internalUrl = "https://HOME.example.com:443/",
+            )
+
+            assertEquals(listOf(ClientCertEndpoint("home.example.com", 443)), connection.clientCertEndpoints)
+        }
+
+        @Test
+        fun `Given no HTTPS URL then there is no client certificate endpoint`() {
+            val connection = ServerConnectionInfo(externalUrl = "http://homeassistant.local:8123")
+
+            assertEquals(emptyList<ClientCertEndpoint>(), connection.clientCertEndpoints)
         }
     }
 

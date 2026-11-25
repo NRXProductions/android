@@ -18,6 +18,7 @@ import io.homeassistant.companion.android.common.data.connectivity.ConnectivityC
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckResult
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckState
 import io.homeassistant.companion.android.common.data.integration.IntegrationRepository
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.ClientCertProvider
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
@@ -63,11 +64,13 @@ import io.homeassistant.companion.android.testing.unit.FakeClock
 import io.homeassistant.companion.android.testing.unit.MainDispatcherJUnit5Extension
 import io.homeassistant.companion.android.util.HAWebViewClientFactory
 import io.homeassistant.companion.android.util.LifecycleHandler
+import io.homeassistant.companion.android.util.ServerClientCertificateHandler
 import io.homeassistant.companion.android.util.hasSameOrigin
 import io.homeassistant.companion.android.util.mockServer
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -119,6 +122,7 @@ class FrontendViewModelTest {
     private val downloadManager: FrontendDownloadManager = mockk(relaxed = true)
     private val gestureManager: FrontendGestureManager = mockk(relaxed = true)
     private val serverManager: ServerManager = mockk(relaxed = true)
+    private val serverClientCertificateHandler: ServerClientCertificateHandler = mockk(relaxed = true)
     private val keyChainRepository: KeyChainRepository = mockk(relaxed = true)
     private val zoomSettingsFlow = MutableStateFlow(ZoomSettings())
     private val autoPlayVideoFlow = MutableStateFlow(false)
@@ -182,6 +186,7 @@ class FrontendViewModelTest {
             frontendBusObserver = frontendBusObserver,
             externalBusRepository = externalBusRepository,
             serverManager = serverManager,
+            serverClientCertificateHandler = serverClientCertificateHandler,
             urlManager = urlManager,
             connectivityCheckRepository = connectivityCheckRepository,
             permissionManager = permissionManager,
@@ -3286,11 +3291,14 @@ class FrontendViewModelTest {
                 assertEquals(FrontendEvent.Relaunch, awaitItem())
                 cancelAndIgnoreRemainingEvents()
             }
-            coVerify { serverManager.removeServer(serverId) }
+            coVerifyOrder {
+                serverClientCertificateHandler.clear(serverId)
+                serverManager.removeServer(serverId)
+            }
         }
 
         @Test
-        fun `Given ClearKeychainAndRelaunch when onErrorAction then clears keychain and sends Relaunch`() = runTest {
+        fun `Given ClearKeychainAndRelaunch when onErrorAction then clears the certificate of the server only and sends Relaunch`() = runTest {
             val viewModel = createViewModel()
             advanceUntilIdle()
 
@@ -3299,7 +3307,8 @@ class FrontendViewModelTest {
                 assertEquals(FrontendEvent.Relaunch, awaitItem())
                 cancelAndIgnoreRemainingEvents()
             }
-            coVerify { keyChainRepository.clear() }
+            coVerify(exactly = 1) { serverClientCertificateHandler.clear(serverId) }
+            coVerify(exactly = 0) { serverManager.removeServer(any()) }
         }
 
         @Test
@@ -3422,9 +3431,12 @@ class FrontendViewModelTest {
     @Nested
     @OptIn(EvaluateJavascriptUsage::class)
     inner class TlsClientCertPriming {
-        private fun stubClientCert(certificate: ClientCertificate?) {
+        /** Stubs [certificate] as the selection of [host] only, like a certificate picked for one server. */
+        private fun stubClientCert(certificate: ClientCertificate?, host: String = "example.com") {
             coEvery { keyChainRepository.getClientCertProvider() } returns object : ClientCertProvider {
-                override val certificate = certificate
+                override val hasCertificate = certificate != null
+
+                override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = certificate.takeIf { endpoint == ClientCertEndpoint(host, port = 443) }
             }
         }
 
@@ -3468,6 +3480,18 @@ class FrontendViewModelTest {
         @Test
         fun `Given no client certificate when preparing a url load then no priming action is emitted`() = runTest {
             stubClientCert(null)
+            val viewModel = createViewModel()
+
+            viewModel.webViewActions.test {
+                viewModel.prepareUrlLoad("https://example.com/")
+                expectNoEvents()
+                cancelAndIgnoreRemainingEvents()
+            }
+        }
+
+        @Test
+        fun `Given a client certificate selected for another server when preparing a url load then no priming action is emitted`() = runTest {
+            stubClientCert(mockk(), host = "other.example.com")
             val viewModel = createViewModel()
 
             viewModel.webViewActions.test {

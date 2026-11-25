@@ -1,15 +1,19 @@
 package io.homeassistant.companion.android.settings.server
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.security.KeyChain
+import android.security.KeyChainAliasCallback
 import android.text.InputType
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
+import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.content.ContextCompat
@@ -30,6 +34,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.homeassistant.companion.android.R
 import io.homeassistant.companion.android.authenticator.Authenticator.Companion.AuthenticationResult
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.frontend.navigation.FrontendTarget
 import io.homeassistant.companion.android.launch.LaunchActivity
 import io.homeassistant.companion.android.launch.intentLaunchWithNavigateTo
@@ -40,6 +45,7 @@ import io.homeassistant.companion.android.settings.url.ExternalUrlFragment
 import io.homeassistant.companion.android.settings.websocket.WebsocketSettingFragment
 import io.homeassistant.companion.android.util.QuestUtil
 import io.homeassistant.companion.android.util.applyBottomSafeDrawingInsets
+import java.lang.ref.WeakReference
 import java.net.URLEncoder
 import javax.inject.Inject
 import kotlinx.coroutines.launch
@@ -47,6 +53,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import timber.log.Timber
 
 private const val BASE_INVITE_URL = "https://my.home-assistant.io/invite/#url="
+private const val PREF_CLIENT_CERTIFICATE = "connection_client_certificate"
 
 @AndroidEntryPoint
 class ServerSettingsFragment :
@@ -189,6 +196,11 @@ class ServerSettingsFragment :
                 }
                 return@setOnPreferenceClickListener true
             }
+        }
+
+        findPreference<Preference>(PREF_CLIENT_CERTIFICATE)?.setOnPreferenceClickListener {
+            lifecycleScope.launch { onClientCertificateClicked() }
+            return@setOnPreferenceClickListener true
         }
 
         findPreference<PreferenceCategory>("security_category")?.isVisible = !QuestUtil.isQuest
@@ -385,6 +397,7 @@ class ServerSettingsFragment :
         presenter.updateServerName()
         presenter.updateUrlStatus()
         updateSecurityLevelSummary()
+        updateClientCertificate()
     }
 
     private fun updateSecurityLevelSummary() {
@@ -400,10 +413,109 @@ class ServerSettingsFragment :
         }
     }
 
+    /**
+     * Shows the TLS client certificate selected for the server. The preference is only visible for a
+     * server with an HTTPS URL, the only kind of connection that can request a certificate.
+     */
+    private fun updateClientCertificate() {
+        lifecycleScope.launch {
+            findPreference<Preference>(PREF_CLIENT_CERTIFICATE)?.let { preference ->
+                preference.isVisible = presenter.getClientCertificateEndpoint() != null
+                preference.summary = presenter.getClientCertificateAliases()
+                    .ifEmpty { listOf(getString(commonR.string.not_set)) }
+                    .joinToString()
+            }
+        }
+    }
+
+    private suspend fun onClientCertificateClicked() {
+        val endpoint = presenter.getClientCertificateEndpoint() ?: return
+        val currentAlias = presenter.getClientCertificateAliases().firstOrNull()
+        if (currentAlias == null) {
+            chooseClientCertificate(endpoint, currentAlias = null)
+            return
+        }
+
+        val actions = listOf(
+            getString(commonR.string.pref_connection_client_certificate_change) to {
+                chooseClientCertificate(endpoint, currentAlias)
+            },
+            getString(commonR.string.pref_connection_client_certificate_remove) to {
+                removeClientCertificate()
+            },
+        )
+        AlertDialog.Builder(requireContext())
+            .setTitle(commonR.string.pref_connection_client_certificate)
+            .setItems(actions.map { it.first }.toTypedArray()) { _, which -> actions[which].second() }
+            .setNegativeButton(commonR.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * Opens the system certificate chooser for [endpoint], with [currentAlias] preselected.
+     */
+    private fun chooseClientCertificate(endpoint: ClientCertEndpoint, currentAlias: String?) {
+        try {
+            KeyChain.choosePrivateKeyAlias(
+                requireActivity(),
+                ClientCertificateAliasCallback(this),
+                null,
+                null,
+                endpoint.host,
+                endpoint.port,
+                currentAlias,
+            )
+        } catch (e: ActivityNotFoundException) {
+            // Some cut-down ROMs don't have a client TLS certificate chooser activity
+            Timber.w(e, "Client certificate chooser activity not available")
+            showClientCertificateMessage(commonR.string.pref_connection_client_certificate_no_chooser)
+        }
+    }
+
+    /** Called from a binder thread once the user picked a certificate in the system chooser. */
+    private fun onClientCertificateChosen(alias: String) {
+        lifecycleScope.launch {
+            if (!presenter.selectClientCertificate(alias)) {
+                showClientCertificateMessage(commonR.string.pref_connection_client_certificate_unavailable)
+            }
+            updateClientCertificate()
+        }
+    }
+
+    private fun removeClientCertificate() {
+        lifecycleScope.launch {
+            presenter.removeClientCertificate()
+            updateClientCertificate()
+        }
+    }
+
+    private fun showClientCertificateMessage(@StringRes messageId: Int) {
+        AlertDialog.Builder(context ?: return)
+            .setTitle(commonR.string.pref_connection_client_certificate)
+            .setMessage(messageId)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     override fun onDestroy() {
         presenter.onFinish()
         super.onDestroy()
     }
 
     fun getServerId(): Int = serverId
+
+    /**
+     * [KeyChain.choosePrivateKeyAlias] holds a strong reference to its callback even after its
+     * invocation, so the fragment is only weakly referenced to not be leaked.
+     */
+    private class ClientCertificateAliasCallback(fragment: ServerSettingsFragment) : KeyChainAliasCallback {
+        private val fragment = WeakReference(fragment)
+
+        override fun alias(alias: String?) {
+            // A null alias means the user dismissed the chooser, the selection is left as it is
+            if (alias != null) {
+                fragment.get()?.onClientCertificateChosen(alias)
+            }
+        }
+    }
 }

@@ -14,6 +14,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckRepository
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckState
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
 import io.homeassistant.companion.android.common.data.prefs.PrefsRepository
 import io.homeassistant.companion.android.common.data.prefs.ScreenOrientation
@@ -56,6 +57,7 @@ import io.homeassistant.companion.android.util.HAWebChromeClient
 import io.homeassistant.companion.android.util.HAWebViewClient
 import io.homeassistant.companion.android.util.HAWebViewClientFactory
 import io.homeassistant.companion.android.util.LifecycleHandler
+import io.homeassistant.companion.android.util.ServerClientCertificateHandler
 import io.homeassistant.companion.android.util.hasSameOrigin
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -119,6 +121,7 @@ internal class FrontendViewModel @VisibleForTesting constructor(
     private val frontendBusObserver: FrontendBusObserver,
     private val externalBusRepository: FrontendExternalBusRepository,
     private val serverManager: ServerManager,
+    private val serverClientCertificateHandler: ServerClientCertificateHandler,
     private val urlManager: FrontendUrlManager,
     private val connectivityCheckRepository: ConnectivityCheckRepository,
     private val permissionManager: PermissionManager,
@@ -144,6 +147,7 @@ internal class FrontendViewModel @VisibleForTesting constructor(
         frontendBusObserver: FrontendBusObserver,
         externalBusRepository: FrontendExternalBusRepository,
         serverManager: ServerManager,
+        serverClientCertificateHandler: ServerClientCertificateHandler,
         urlManager: FrontendUrlManager,
         connectivityCheckRepository: ConnectivityCheckRepository,
         permissionManager: PermissionManager,
@@ -166,6 +170,7 @@ internal class FrontendViewModel @VisibleForTesting constructor(
         frontendBusObserver = frontendBusObserver,
         externalBusRepository = externalBusRepository,
         serverManager = serverManager,
+        serverClientCertificateHandler = serverClientCertificateHandler,
         urlManager = urlManager,
         connectivityCheckRepository = connectivityCheckRepository,
         permissionManager = permissionManager,
@@ -312,8 +317,8 @@ internal class FrontendViewModel @VisibleForTesting constructor(
 
     /**
      * Primes the TLS client certificate for [url]'s host before the WebView loads it, when a
-     * client certificate is configured. No-op for other URLs (e.g. about:blank) or without a
-     * certificate.
+     * client certificate is selected for that host. No-op for other URLs (e.g. about:blank) or
+     * without a certificate.
      *
      * Without priming, on servers requiring a TLS client certificate (mTLS), the first load after
      * a process start always fails and shows the retry screen. Three facts combine into that
@@ -336,7 +341,8 @@ internal class FrontendViewModel @VisibleForTesting constructor(
      */
     suspend fun prepareUrlLoad(url: String) {
         val manifestUrl = url.toHttpUrlOrNull()?.resolve("/manifest.json") ?: return
-        if (keyChainRepository.getClientCertProvider().certificate == null) return
+        val endpoint = ClientCertEndpoint(manifestUrl.host, manifestUrl.port)
+        if (keyChainRepository.getClientCertProvider().certificateFor(endpoint) == null) return
 
         val action = WebViewAction.PingUrl(manifestUrl.toString())
         // An emission without subscribers is dropped: on a cold start this can run before the
@@ -588,12 +594,16 @@ internal class FrontendViewModel @VisibleForTesting constructor(
     fun onErrorAction(intent: ErrorActionIntent) {
         when (intent) {
             ErrorActionIntent.RemoveServerAndRelaunch -> viewModelScope.launch {
-                serverManager.removeServer(_viewState.value.serverId)
+                val serverId = _viewState.value.serverId
+                // Must be done while the server still exists, its certificate is not kept for a
+                // server added later on the same host.
+                serverClientCertificateHandler.clear(serverId)
+                serverManager.removeServer(serverId)
                 _events.send(FrontendEvent.Relaunch)
             }
 
             ErrorActionIntent.ClearKeychainAndRelaunch -> viewModelScope.launch {
-                keyChainRepository.clear()
+                serverClientCertificateHandler.clear(_viewState.value.serverId)
                 _events.send(FrontendEvent.Relaunch)
             }
 

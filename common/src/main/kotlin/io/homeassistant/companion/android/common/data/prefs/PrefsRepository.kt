@@ -150,9 +150,20 @@ interface PrefsRepository {
 
     suspend fun setCrashReporting(crashReportingEnabled: Boolean)
 
+    /**
+     * Saves the KeyChain alias older versions of the app used for every connection. Only kept to
+     * migrate it, use [saveKeyAliases].
+     */
     suspend fun saveKeyAlias(alias: String)
 
+    /** Returns the KeyChain alias older versions of the app used for every connection, see [getKeyAliases]. */
     suspend fun getKeyAlias(): String?
+
+    /** Saves the KeyChain alias of the client certificate selected for each endpoint (`host:port`). */
+    suspend fun saveKeyAliases(aliases: Map<String, String>)
+
+    /** Returns the KeyChain alias of the client certificate selected for each endpoint (`host:port`). */
+    suspend fun getKeyAliases(): Map<String, String>
 
     suspend fun getIgnoredSuggestions(): List<String>
 

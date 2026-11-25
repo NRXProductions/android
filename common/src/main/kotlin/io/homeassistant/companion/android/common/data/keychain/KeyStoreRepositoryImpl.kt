@@ -25,9 +25,12 @@ internal class KeyStoreRepositoryImpl @Inject constructor() : KeyStoreRepository
     @Volatile
     private var certificate: ClientCertificate? = null
 
+    /** The watch is paired with a single server, so its certificate is not bound to an endpoint. */
     private val provider = object : ClientCertProvider {
-        override val certificate: ClientCertificate?
-            get() = this@KeyStoreRepositoryImpl.certificate
+        override val hasCertificate: Boolean
+            get() = certificate != null
+
+        override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = certificate
     }
 
     override suspend fun getClientCertProvider(): ClientCertProvider {

@@ -3,6 +3,7 @@ package io.homeassistant.companion.android.database.server
 import androidx.room3.ColumnInfo
 import androidx.room3.ColumnTypeConverter
 import androidx.room3.Ignore
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.util.kotlinJsonMapper
 import io.homeassistant.companion.android.util.hasSameOrigin
 import kotlinx.serialization.SerializationException
@@ -93,6 +94,18 @@ data class ServerConnectionInfo(
             internalHttpUrl,
             cloudHttpUrl,
         )
+    }
+
+    /**
+     * The HTTPS endpoints of the URLs set by the user (external and internal), where the server can
+     * request a TLS client certificate. The Home Assistant Cloud URLs are left out, they never do.
+     */
+    @get:Ignore
+    val clientCertEndpoints: List<ClientCertEndpoint> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        listOfNotNull(externalHttpUrl, internalHttpUrl)
+            .filter { it.isHttps }
+            .map { ClientCertEndpoint(it.host, it.port) }
+            .distinct()
     }
 
     /**

@@ -17,6 +17,7 @@ import androidx.annotation.StringRes
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.homeassistant.companion.android.common.R as commonR
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.ClientCertProvider
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
@@ -46,7 +47,9 @@ class HAWebViewClientTest {
 
     private val keyChainRepository: KeyChainRepository = mockk(relaxed = true)
     private val clientCertProvider = object : ClientCertProvider {
-        override val certificate: ClientCertificate? = null
+        override val hasCertificate: Boolean = false
+
+        override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = null
     }
     private val currentUrlFlow = MutableStateFlow<String?>(null)
     private var capturedError: FrontendConnectionError? = null

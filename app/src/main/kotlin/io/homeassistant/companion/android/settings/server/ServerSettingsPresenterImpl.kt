@@ -1,8 +1,10 @@
 package io.homeassistant.companion.android.settings.server
 
 import androidx.preference.PreferenceDataStore
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.network.WifiHelper
 import io.homeassistant.companion.android.common.data.servers.ServerManager
+import io.homeassistant.companion.android.util.ServerClientCertificateHandler
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +17,7 @@ import timber.log.Timber
 class ServerSettingsPresenterImpl @Inject constructor(
     private val serverManager: ServerManager,
     private val wifiHelper: WifiHelper,
+    private val clientCertificateHandler: ServerClientCertificateHandler,
 ) : PreferenceDataStore(),
     ServerSettingsPresenter {
 
@@ -114,6 +117,9 @@ class ServerSettingsPresenterImpl @Inject constructor(
                 Timber.w(e, "Unable to revoke session for server")
                 // Remove server anyway, the user wants to delete and we don't need the server for that
             }
+            // Must be done while the server still exists, its certificate is not kept for a server
+            // added later on the same host.
+            clientCertificateHandler.clear(serverId)
             serverManager.removeServer(serverId)
             view.onRemovedServer(
                 success = true,
@@ -193,4 +199,14 @@ class ServerSettingsPresenterImpl @Inject constructor(
     override suspend fun getAllowInsecureConnection(): Boolean? {
         return serverManager.getServer(serverId)?.connection?.allowInsecureConnection
     }
+
+    override suspend fun getClientCertificateEndpoint(): ClientCertEndpoint? =
+        clientCertificateHandler.getEndpoints(serverId).firstOrNull()
+
+    override suspend fun getClientCertificateAliases(): List<String> = clientCertificateHandler.getAliases(serverId)
+
+    override suspend fun selectClientCertificate(alias: String): Boolean =
+        clientCertificateHandler.select(serverId, alias)
+
+    override suspend fun removeClientCertificate() = clientCertificateHandler.clear(serverId)
 }

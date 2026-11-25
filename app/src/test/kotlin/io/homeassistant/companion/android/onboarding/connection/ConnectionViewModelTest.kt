@@ -13,6 +13,7 @@ import io.homeassistant.companion.android.common.R as commonR
 import io.homeassistant.companion.android.common.data.authentication.impl.AuthenticationService
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckRepository
 import io.homeassistant.companion.android.common.data.connectivity.ConnectivityCheckState
+import io.homeassistant.companion.android.common.data.keychain.ClientCertEndpoint
 import io.homeassistant.companion.android.common.data.keychain.ClientCertProvider
 import io.homeassistant.companion.android.common.data.keychain.ClientCertificate
 import io.homeassistant.companion.android.common.data.keychain.KeyChainRepository
@@ -66,7 +67,9 @@ class ConnectionViewModelTest {
 
     private val keyChainRepository: KeyChainRepository = mockk(relaxed = true)
     private val clientCertProvider = object : ClientCertProvider {
-        override val certificate: ClientCertificate? = null
+        override val hasCertificate: Boolean = false
+
+        override fun certificateFor(endpoint: ClientCertEndpoint): ClientCertificate? = null
     }
     private val webViewClientFactory: HAWebViewClientFactory = mockk {
         coEvery {
