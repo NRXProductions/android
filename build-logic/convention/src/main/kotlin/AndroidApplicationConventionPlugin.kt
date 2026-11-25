@@ -7,6 +7,10 @@ import org.gradle.kotlin.dsl.configure
 
 private const val APPLICATION_ID = "io.homeassistant.companion.android"
 
+// Fork only (see FORK.md): lets the fork be installed next to the official app
+private const val APPLICATION_ID_PROPERTY = "homeAssistantAndroidApplicationId"
+private const val APP_NAME_PROPERTY = "homeAssistantAndroidAppName"
+
 /**
  * A convention plugin that applies common configurations to Android application modules.
  * This centralizes configuration, preventing duplication across multiple modules.
@@ -19,6 +23,9 @@ private const val APPLICATION_ID = "io.homeassistant.companion.android"
  * out of this convention plugin.
  *
  * The application's `versionCode` can be set via the `VERSION_CODE` environment variable.
+ * In this fork (see FORK.md) the `versionName` can be set via the `VERSION_NAME` environment variable,
+ * and the application ID and name via the `homeAssistantAndroidApplicationId` and
+ * `homeAssistantAndroidAppName` Gradle properties.
  *
  * The `debugExtraResDir` Gradle property adds a resource directory to the `debug` build type only.
  * The E2E workflow uses it to build in the trust anchor of its per-run mTLS CA
@@ -45,11 +52,16 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
             extensions.configure<ApplicationExtension> {
                 namespace = APPLICATION_ID
 
+                val appName = providers.gradleProperty(APP_NAME_PROPERTY).orNull?.takeIf { it.isNotBlank() }
+
                 defaultConfig {
-                    applicationId = APPLICATION_ID
+                    applicationId = providers.gradleProperty(APPLICATION_ID_PROPERTY).orNull
+                        ?.takeIf { it.isNotBlank() } ?: APPLICATION_ID
+                    appName?.let { resValue("string", "app_name", it) }
                     targetSdk = libs.versions.androidSdk.target.get().toInt()
 
-                    versionName = project.version.toString()
+                    versionName =
+                        System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: project.version.toString()
                     versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
 
                     val noStrictMode = project.findProperty("noStrictMode")?.toString()?.ifEmpty { "true" }
@@ -59,6 +71,7 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
 
                 buildFeatures {
                     viewBinding = true
+                    resValues = appName != null
                 }
 
                 signingConfigs {

@@ -1,0 +1,241 @@
+name: Fork Release
+
+# Builds this fork on top of the latest stable upstream release.
+#
+# Every run merges the latest stable release of home-assistant/android into the default branch of
+# the fork (in the runner only, nothing is pushed), runs the unit tests and builds signed APKs that
+# are published as a GitHub release. A merge conflict or a failing test stops the run before
+# anything is published and is reported in an issue. See FORK.md.
+
+on: # yamllint disable-line rule:truthy
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream-tag:
+        description: "Upstream tag to build, the latest stable upstream release when empty"
+        required: false
+        type: string
+      force:
+        description: "Build even when this upstream release was already published for this fork revision"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false # Never cancel a release in flight
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPOSITORY: home-assistant/android
+  REPORT_TITLE: "Fork release failed"
+
+jobs:
+  check:
+    name: Check Upstream Release
+    runs-on: ubuntu-latest
+    if: github.repository != 'home-assistant/android'
+    outputs:
+      upstream-tag: ${{ steps.check.outputs.upstream-tag }}
+      release-tag: ${{ steps.check.outputs.release-tag }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Find the upstream release to build
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_UPSTREAM_TAG: ${{ inputs.upstream-tag }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: |
+          upstream_tag="$INPUT_UPSTREAM_TAG"
+          if [[ -z "$upstream_tag" ]]; then
+            # "latest" is the most recent release which is neither a draft nor a pre-release
+            upstream_tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq .tag_name)"
+          fi
+          if [[ ! "$upstream_tag" =~ ^[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$upstream_tag' is not a stable upstream release tag"
+            exit 1
+          fi
+
+          # A release is identified by the upstream release and the revision of the fork it was built from
+          release_tag="${upstream_tag}-mtls.${GITHUB_SHA::7}"
+          build=true
+          if [[ "$INPUT_FORCE" != "true" ]] && gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            build=false
+            echo "Release $release_tag already exists, nothing to do" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          {
+            echo "upstream-tag=$upstream_tag"
+            echo "release-tag=$release_tag"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build And Publish
+    needs: [check]
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Create the release
+      issues: write # Report a failure
+    env:
+      UPSTREAM_TAG: ${{ needs.check.outputs.upstream-tag }}
+      RELEASE_TAG: ${{ needs.check.outputs.release-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge the upstream release
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPOSITORY.git" "refs/tags/$UPSTREAM_TAG:refs/upstream/$UPSTREAM_TAG"
+          if ! git merge --no-edit "refs/upstream/$UPSTREAM_TAG"; then
+            {
+              echo "### Merge conflict with upstream $UPSTREAM_TAG"
+              echo
+              echo "Merge \`$UPSTREAM_TAG\` of $UPSTREAM_REPOSITORY into \`$GITHUB_REF_NAME\` locally, resolve the conflicts and push."
+              echo
+              echo '```'
+              git diff --name-only --diff-filter=U
+              echo '```'
+            } > "$RUNNER_TEMP/report.md"
+            exit 1
+          fi
+
+      - uses: ./.github/actions/setup-build-env
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      - name: Provide google-services.json
+        env:
+          GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES }}
+        run: |
+          application_id="$(grep -E '^homeAssistantAndroidApplicationId=' gradle.properties | cut -d= -f2)"
+          if [[ -n "$GOOGLE_SERVICES" ]]; then
+            echo "$GOOGLE_SERVICES" > app/google-services.json
+          else
+            # Without a Firebase project of its own the fork is built with placeholder values:
+            # everything works but the push notifications delivered through Firebase.
+            # The upstream application IDs are kept next to the ones of the fork for the unit tests.
+            jq --arg id "${application_id:-io.homeassistant.companion.android}" \
+              '.client += [.client[] | .client_info.android_client_info.package_name |= sub("^io\\.homeassistant\\.companion\\.android"; $id)]' \
+              .github/mock-google-services.json > app/google-services.json
+          fi
+
+      - name: Run unit tests
+        id: test
+        # The tests run with the upstream application ID and name (blank overrides), so they
+        # behave exactly like upstream and only tell whether the merged code works.
+        run: |
+          if ! ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest :app:compileMinimalDebugUnitTestKotlin \
+            -PhomeAssistantAndroidApplicationId= -PhomeAssistantAndroidAppName=; then
+            {
+              echo "### Unit tests failed on upstream $UPSTREAM_TAG"
+              echo
+              echo "The tests of the fork merged with \`$UPSTREAM_TAG\` do not pass, see the run log for the failing tests."
+            } > "$RUNNER_TEMP/report.md"
+            exit 1
+          fi
+
+      - name: Build signed APKs
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_ALIAS_PASSWORD: ${{ secrets.KEYSTORE_ALIAS_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEYSTORE_ALIAS" || -z "$KEYSTORE_ALIAS_PASSWORD" ]]; then
+            echo "### Signing secrets are missing" > "$RUNNER_TEMP/report.md"
+            echo "Set KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEYSTORE_ALIAS and KEYSTORE_ALIAS_PASSWORD, see FORK.md." >> "$RUNNER_TEMP/report.md"
+            exit 1
+          fi
+          export KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+
+          # The version code only has to grow from one release to the next for Android to accept
+          # the update over the installed app, minutes since the epoch do that without any state.
+          export VERSION_CODE="$(( $(date +%s) / 60 ))"
+          export VERSION_NAME="${UPSTREAM_TAG}-mtls"
+
+          if ! ./gradlew :app:assembleFullRelease :app:assembleMinimalRelease; then
+            echo "### Release build failed on upstream $UPSTREAM_TAG" > "$RUNNER_TEMP/report.md"
+            exit 1
+          fi
+          rm -f "$KEYSTORE_PATH"
+
+          mkdir -p "$RUNNER_TEMP/apks"
+          cp app/build/outputs/apk/full/release/app-full-release.apk "$RUNNER_TEMP/apks/home-assistant-mtls-$UPSTREAM_TAG-full.apk"
+          cp app/build/outputs/apk/minimal/release/app-minimal-release.apk "$RUNNER_TEMP/apks/home-assistant-mtls-$UPSTREAM_TAG-minimal.apk"
+          (cd "$RUNNER_TEMP/apks" && sha256sum ./*.apk > SHA256SUMS)
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+
+      - name: Verify the APK signatures
+        run: |
+          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -n 1)"
+          for apk in "$RUNNER_TEMP"/apks/*.apk; do
+            "$apksigner" verify --print-certs "$apk" | grep -E "Signer #1 certificate (DN|SHA-256)"
+          done
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Home Assistant Companion for Android **$UPSTREAM_TAG** with the multi-server mTLS fix."
+            echo
+            echo "- Upstream release: https://github.com/$UPSTREAM_REPOSITORY/releases/tag/$UPSTREAM_TAG"
+            echo "- Fork revision: $GITHUB_SHA"
+            echo "- Version code: $VERSION_CODE"
+            echo
+            echo "Install the \`full\` APK unless you want a build without Google Play Services (\`minimal\`)."
+            echo "Both install as an update over the previous release of the same flavor and keep the app data."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/apks/SHA256SUMS"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2> /dev/null || true
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$UPSTREAM_TAG mTLS" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --latest \
+            "$RUNNER_TEMP"/apks/*.apk "$RUNNER_TEMP/apks/SHA256SUMS"
+
+      - name: Close the failure report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$REPORT_TITLE\"" --json number --jq '.[0].number' 2> /dev/null || true)"
+          if [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$GITHUB_REPOSITORY" --comment "Fixed, $RELEASE_TAG was published."
+          fi
+
+      - name: Report the failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          report="$RUNNER_TEMP/report.md"
+          [[ -f "$report" ]] || echo "### Fork release of upstream $UPSTREAM_TAG failed" > "$report"
+          printf '\nRun: %s\n' "$RUN_URL" >> "$report"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+          # Nothing was published. The issue is a best effort on top of the failed run (issues are
+          # disabled by default on a fork).
+          issue="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$REPORT_TITLE\"" --json number --jq '.[0].number' 2> /dev/null || true)"
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$report" || true
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$REPORT_TITLE" --body-file "$report" || true
+          fi
