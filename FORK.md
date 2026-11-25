@@ -15,7 +15,7 @@ anymore.
 | Client certificate selected per server endpoint instead of once for the app | `common/.../data/keychain/`, `common/.../data/TLSHelper.kt`, `app/.../util/TLSWebViewClient.kt` |
 | "TLS client certificate" setting on each server (select, change, remove) | `app/.../settings/server/` |
 | Separate application ID and name, so it installs next to the official app | `gradle.properties`, `build-logic/.../AndroidApplicationConventionPlugin.kt` |
-| Release pipeline of the fork | `.github/workflows/fork-release.yml`, `.github/scripts/fork-release.sh` |
+| Release pipeline of the fork | `.github/workflows/fork-release.yml`, `.github/scripts/fork-*` |
 
 The first two rows are the fix proposed upstream (branch `fix/multi-server-mtls`), the last two
 only exist in this fork (branch `mtls`).

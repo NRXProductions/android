@@ -133,10 +133,11 @@ jobs:
             # Compiled one task at a time, see GRADLE_SERIAL. The tests then run in parallel.
             ./gradlew :common:compileDebugUnitTestKotlin :app:compileFullDebugUnitTestKotlin \
               :app:compileMinimalDebugUnitTestKotlin "${properties[@]}" $GRADLE_SERIAL &&
-              ./gradlew :common:testDebugUnitTest :app:testFullDebugUnitTest "${properties[@]}"
+              ./gradlew -I .github/scripts/fork-robolectric-mirror.init.gradle.kts                 :common:testDebugUnitTest :app:testFullDebugUnitTest "${properties[@]}"
           }
-          # Robolectric downloads the Android runtime it needs from Maven Central while the tests
-          # run. A failed download fails the tests it was for, a second attempt rules that out.
+          # Robolectric downloads the Android runtime it needs while the tests run (from a mirror of
+          # Maven Central, see the init script). A failed download fails the tests it was for, a
+          # second attempt rules that out.
           if ! run_tests; then
             echo "::warning::The unit tests failed, running them a second time"
             if ! run_tests; then
