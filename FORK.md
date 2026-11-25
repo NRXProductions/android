@@ -65,6 +65,11 @@ The `Fork Release` workflow runs every night and on demand:
 3. It runs the unit tests of `:common` and `:app`.
 4. In a second job, on a fresh runner, it does the same merge again and builds the `full` and
    `minimal` release APKs, signed with the key of the fork.
+
+Both jobs compile with `--max-workers=1`. When the KSP tasks of two modules run at the same time,
+one of them can silently generate nothing and the build fails later with
+`Cannot load class ...Hilt_...`. Use the same flag (and `--no-build-cache` once, to get rid of the
+bad cached output) when a local build fails that way.
 5. It publishes them as a GitHub release named after the upstream release, for example
    `2026.11.2-mtls.1a2b3c4`.
 
