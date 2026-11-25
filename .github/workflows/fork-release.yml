@@ -43,6 +43,11 @@ jobs:
       release-tag: ${{ steps.check.outputs.release-tag }}
       build: ${{ steps.check.outputs.build }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Find the upstream release to build
         id: check
         env:
@@ -58,6 +63,19 @@ jobs:
           if [[ ! "$upstream_tag" =~ ^[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::'$upstream_tag' is not a stable upstream release tag"
             exit 1
+          fi
+
+          # The branch can already be ahead of that release, when it was last merged with a newer
+          # upstream version. A release never goes back to an older upstream version: installed
+          # over a newer one it would have to downgrade the app data. The release is then built
+          # from, and named after, the newest upstream version the branch contains.
+          git fetch --quiet --tags "https://github.com/$UPSTREAM_REPOSITORY.git"
+          if git merge-base --is-ancestor "refs/tags/$upstream_tag" HEAD; then
+            contained_tag="$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' HEAD)"
+            if [[ "$contained_tag" != "$upstream_tag" ]]; then
+              echo "The branch already contains upstream $contained_tag, newer than the latest stable release $upstream_tag" >> "$GITHUB_STEP_SUMMARY"
+              upstream_tag="$contained_tag"
+            fi
           fi
 
           # A release is identified by the upstream release and the revision of the fork it was built from
@@ -199,7 +217,8 @@ jobs:
         run: |
           apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -n 1)"
           for apk in "$RUNNER_TEMP"/apks/*.apk; do
-            "$apksigner" verify --print-certs "$apk" | grep -E "Signer #1 certificate (DN|SHA-256)"
+            # The exit code tells whether the signature is valid, the certificate is printed for the log
+            "$apksigner" verify --print-certs "$apk"
           done
 
       - name: Publish the release

@@ -56,7 +56,10 @@ installed next to the official app and shares nothing with it.
 
 The `Fork Release` workflow runs every night and on demand:
 
-1. It looks up the latest stable release of home-assistant/android.
+1. It looks up the latest stable release of home-assistant/android. When the `mtls` branch already
+   contains a newer upstream version (it was started on 2026.11.2, a pre-release at that time),
+   that version is used instead: a release never goes back to an older upstream version, because
+   installed over a newer one it would have to downgrade the app data.
 2. If no release of the fork exists yet for that upstream release and the current revision of the
    `mtls` branch, it merges the upstream tag into `mtls` **inside the runner** (nothing is pushed).
 3. It runs the unit tests of `:common` and `:app`.
